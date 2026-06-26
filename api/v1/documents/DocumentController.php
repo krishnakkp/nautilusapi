@@ -50,12 +50,15 @@ class DocumentController {
 
         $ext      = $mime === 'application/pdf' ? 'pdf' : 'docx';
         $filename = uniqid('doc_', true) . '.' . $ext;
-        $destPath = $uploadDir . '/' . $filename;
+        $destPath = rtrim($uploadDir, '/') . '/' . $filename;
 
         if (!move_uploaded_file($file['tmp_name'], $destPath)) {
             Response::error('Failed to save uploaded file', 500);
             return;
         }
+
+        // Store canonical absolute path for reliable file serving later
+        $storedPath = realpath($destPath) ?: $destPath;
 
         if (!$title) {
             $title = pathinfo($file['name'], PATHINFO_FILENAME);
@@ -64,7 +67,7 @@ class DocumentController {
         // Insert document record
         $docId = Database::insert(
             'INSERT INTO documents (category_id, title, original_filename, storage_path, mime_type, file_size, status, uploaded_by) VALUES (?,?,?,?,?,?,?,?)',
-            [$categoryId, $title, $file['name'], $destPath, $mime, $file['size'], 'pending', $admin['id']]
+            [$categoryId, $title, $file['name'], $storedPath, $mime, $file['size'], 'pending', $admin['id']]
         );
 
         // Queue parsing job
@@ -74,7 +77,7 @@ class DocumentController {
         );
 
         // Parse immediately so documents are searchable without a background worker
-        $this->parseDocument((int) $docId, $destPath, $mime);
+        $this->parseDocument((int) $docId, $storedPath, $mime);
 
         $doc = Database::queryOne(
             'SELECT status, error_message, page_count FROM documents WHERE id = ?',
@@ -152,15 +155,8 @@ class DocumentController {
             return;
         }
 
-        $path      = realpath($doc['storage_path']);
-        $uploadDir = realpath(rtrim($cfg['app']['upload_dir'], '/'));
-
-        if (
-            !$path
-            || !$uploadDir
-            || !is_readable($path)
-            || !str_starts_with($path, $uploadDir . DIRECTORY_SEPARATOR)
-        ) {
+        $path = $this->resolveDocumentPath($doc['storage_path'], $cfg['app']['upload_dir']);
+        if (!$path) {
             Logger::warn("Document file missing or unreadable: id=$id path={$doc['storage_path']}");
             Response::error('Document file not available', 404);
             return;
@@ -173,6 +169,39 @@ class DocumentController {
         header('Cache-Control: private, max-age=3600');
         readfile($path);
         exit;
+    }
+
+    /** Resolve a stored path to a readable file under uploads/. */
+    private function resolveDocumentPath(string $storagePath, string $uploadDir): ?string {
+        $normalized = str_replace('/config/../', '/', $storagePath);
+        $basename   = basename($storagePath);
+
+        $candidates = array_unique(array_filter([
+            $storagePath,
+            $normalized,
+            rtrim($uploadDir, '/') . '/' . $basename,
+        ]));
+
+        foreach ($candidates as $candidate) {
+            $resolved = realpath($candidate);
+            if (!$resolved || !is_file($resolved) || !is_readable($resolved)) {
+                continue;
+            }
+
+            $ext = strtolower(pathinfo($resolved, PATHINFO_EXTENSION));
+            if (!in_array($ext, ['pdf', 'docx'], true)) {
+                continue;
+            }
+
+            // Must be inside an uploads folder (security boundary)
+            if (!str_contains($resolved, DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR)) {
+                continue;
+            }
+
+            return $resolved;
+        }
+
+        return null;
     }
 
     public function show(array $params): void {
