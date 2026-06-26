@@ -19,8 +19,12 @@ class DocumentController {
             return;
         }
 
-        // Validate MIME
+        // Validate MIME (some hosts report DOCX as application/zip)
         $mime = mime_content_type($file['tmp_name']);
+        $ext  = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        if ($ext === 'docx' && in_array($mime, ['application/zip', 'application/octet-stream'], true)) {
+            $mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        }
         $allowed = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
         if (!in_array($mime, $allowed)) {
             Response::error('Only PDF and DOCX files are allowed', 400);
@@ -69,14 +73,29 @@ class DocumentController {
             [$docId, 'queued']
         );
 
-        // Synchronous parse for small files (< 5MB); async for larger
-        if ($file['size'] < 5 * 1024 * 1024) {
-            $this->parseDocument((int) $docId, $destPath, $mime);
-        }
+        // Parse immediately so documents are searchable without a background worker
+        $this->parseDocument((int) $docId, $destPath, $mime);
+
+        $doc = Database::queryOne(
+            'SELECT status, error_message, page_count FROM documents WHERE id = ?',
+            [$docId]
+        );
+
+        $status  = $doc['status'] ?? 'pending';
+        $message = match ($status) {
+            'ready' => 'Document uploaded and indexed successfully.',
+            'error' => 'Document uploaded but parsing failed: ' . ($doc['error_message'] ?? 'unknown error'),
+            default => 'Document uploaded. Parsing in progress.',
+        };
 
         Response::success(
-            ['document_id' => (int) $docId, 'status' => 'pending'],
-            'Document uploaded. Parsing in progress.',
+            [
+                'document_id' => (int) $docId,
+                'status'      => $status,
+                'page_count'  => isset($doc['page_count']) ? (int) $doc['page_count'] : null,
+                'error'       => $doc['error_message'] ?? null,
+            ],
+            $message,
             201
         );
     }
@@ -190,6 +209,8 @@ class DocumentController {
                 ? $parser->parsePdf($path)
                 : $parser->parseDocx($path);
 
+            $this->assertExtractedText($pages);
+
             $cfg = require __DIR__ . '/../../../config/config.php';
             $chunkSize    = $cfg['llm']['chunk_size'];
             $chunkOverlap = $cfg['llm']['chunk_overlap'];
@@ -223,6 +244,29 @@ class DocumentController {
                 "UPDATE document_jobs SET status = 'failed', error_message = ? WHERE document_id = ?",
                 [$e->getMessage(), $docId]
             );
+        }
+    }
+
+    private function assertExtractedText(array $pages): void {
+        $placeholders = [
+            'No text content extracted',
+            'No text extracted',
+            'No extractable text found (may be a scanned PDF)',
+        ];
+
+        $totalChars = 0;
+        foreach ($pages as $text) {
+            $trimmed = trim($text);
+            if (in_array($trimmed, $placeholders, true)) {
+                throw new RuntimeException(
+                    'Could not extract readable text. The file may be a scanned/image PDF — please upload a text-based PDF or DOCX.'
+                );
+            }
+            $totalChars += strlen($trimmed);
+        }
+
+        if ($totalChars < 50) {
+            throw new RuntimeException('Could not extract enough text from the document to index it.');
         }
     }
 }

@@ -7,6 +7,22 @@ require_once __DIR__ . '/../../../middleware/RateLimiter.php';
 
 class ChatController {
 
+    private const STOPWORDS = [
+        'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+        'should', 'may', 'might', 'must', 'can', 'to', 'of', 'in', 'for', 'on',
+        'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during', 'before',
+        'after', 'above', 'below', 'between', 'under', 'again', 'then', 'once',
+        'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few',
+        'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
+        'own', 'same', 'so', 'than', 'too', 'very', 'just', 'what', 'which',
+        'who', 'whom', 'this', 'that', 'these', 'those', 'and', 'but', 'if',
+        'or', 'because', 'until', 'while', 'about', 'any', 'our', 'your',
+        'their', 'my', 'we', 'you', 'they', 'it', 'its', 'he', 'she', 'me',
+        'him', 'her', 'us', 'them', 'also', 'please', 'tell', 'give', 'know',
+        'explain', 'describe', 'say', 'find',
+    ];
+
     public function ask(array $params = []): void {
         $user = AuthMiddleware::require();
         $cfg  = require __DIR__ . '/../../../config/config.php';
@@ -288,49 +304,148 @@ class ChatController {
     }
 
     private function retrieveChunks(string $question, ?int $categoryId, int $limit): array {
-        // Prepare FULLTEXT search terms
-        $words  = array_filter(explode(' ', preg_replace('/[^\w\s]/u', '', $question)));
-        $ftExpr = implode(' ', array_map(fn($w) => '+' . $w, array_slice($words, 0, 10)));
+        $limit = max(1, $limit);
+        $terms = $this->extractSearchTerms($question);
 
-        $binds = [$ftExpr];
+        $chunks = $this->searchChunks($terms['natural'], $categoryId, $limit, 'natural');
 
-        $categoryJoin = '';
-        if ($categoryId) {
-            $categoryJoin = 'AND d.category_id = ?';
-            $binds[]      = $categoryId;
+        if (empty($chunks) && $terms['boolean'] !== '') {
+            $chunks = $this->searchChunks($terms['boolean'], $categoryId, $limit, 'boolean');
         }
 
-        $binds[] = $limit;
+        if (empty($chunks) && !empty($terms['keywords'])) {
+            $chunks = $this->likeSearchChunks($terms['keywords'], $categoryId, $limit);
+        }
 
-        $chunks = Database::query(
-            "SELECT dc.document_id, dc.page_number, dc.content,
-                    d.title,
-                    MATCH(dc.content) AGAINST (? IN BOOLEAN MODE) AS score
-             FROM document_chunks dc
-             JOIN documents d ON d.id = dc.document_id AND d.status = 'ready'
-             WHERE MATCH(dc.content) AGAINST (? IN BOOLEAN MODE)
-             $categoryJoin
-             ORDER BY score DESC
-             LIMIT ?",
-            array_merge([$ftExpr], $binds)
-        );
-
-        // Fallback: widen to full corpus if < 3 results
-        if (count($chunks) < 3 && $categoryId) {
-            $chunks = Database::query(
-                "SELECT dc.document_id, dc.page_number, dc.content,
-                        d.title,
-                        MATCH(dc.content) AGAINST (? IN BOOLEAN MODE) AS score
-                 FROM document_chunks dc
-                 JOIN documents d ON d.id = dc.document_id AND d.status = 'ready'
-                 WHERE MATCH(dc.content) AGAINST (? IN BOOLEAN MODE)
-                 ORDER BY score DESC
-                 LIMIT ?",
-                [$ftExpr, $ftExpr, $limit]
-            );
+        // Widen to all categories if a filtered search returned too little
+        if (count($chunks) < min(3, $limit) && $categoryId) {
+            $more = $this->searchChunks($terms['natural'], null, $limit, 'natural');
+            if (empty($more) && $terms['boolean'] !== '') {
+                $more = $this->searchChunks($terms['boolean'], null, $limit, 'boolean');
+            }
+            if (empty($more) && !empty($terms['keywords'])) {
+                $more = $this->likeSearchChunks($terms['keywords'], null, $limit);
+            }
+            $chunks = $this->mergeChunks($chunks, $more, $limit);
         }
 
         return $chunks;
+    }
+
+    private function extractSearchTerms(string $question): array {
+        $words = preg_split(
+            '/\s+/',
+            mb_strtolower(preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $question)),
+            -1,
+            PREG_SPLIT_NO_EMPTY
+        );
+
+        $significant = [];
+        foreach ($words as $word) {
+            if (strlen($word) >= 2 && !in_array($word, self::STOPWORDS, true)) {
+                $significant[] = $word;
+            }
+        }
+
+        $significant = array_values(array_unique($significant));
+        $top         = array_slice($significant, 0, 12);
+
+        return [
+            'natural'  => implode(' ', $top),
+            'boolean'  => implode(' ', array_map(
+                fn($w) => strlen($w) >= 3 ? $w . '*' : $w,
+                $top
+            )),
+            'keywords' => array_slice($top, 0, 5),
+        ];
+    }
+
+    private function searchChunks(string $expr, ?int $categoryId, int $limit, string $mode): array {
+        if ($expr === '') {
+            return [];
+        }
+
+        $modeSql     = $mode === 'boolean' ? 'BOOLEAN MODE' : 'NATURAL LANGUAGE MODE';
+        $categorySql = $categoryId ? 'AND d.category_id = ?' : '';
+        $binds       = [$expr, $expr];
+        if ($categoryId) {
+            $binds[] = $categoryId;
+        }
+        $binds[] = $limit;
+
+        try {
+            return Database::query(
+                "SELECT dc.document_id, dc.page_number, dc.content,
+                        d.title,
+                        MATCH(dc.content) AGAINST (? IN $modeSql) AS score
+                 FROM document_chunks dc
+                 JOIN documents d ON d.id = dc.document_id AND d.status = 'ready'
+                 WHERE MATCH(dc.content) AGAINST (? IN $modeSql)
+                 $categorySql
+                 ORDER BY score DESC
+                 LIMIT ?",
+                $binds
+            );
+        } catch (PDOException $e) {
+            Logger::warn('FULLTEXT search failed: ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    private function likeSearchChunks(array $keywords, ?int $categoryId, int $limit): array {
+        $likes = [];
+        $binds = [];
+
+        foreach ($keywords as $keyword) {
+            if (strlen($keyword) < 2) {
+                continue;
+            }
+            $likes[] = 'dc.content LIKE ?';
+            $binds[] = '%' . $keyword . '%';
+        }
+
+        if (empty($likes)) {
+            return [];
+        }
+
+        $categorySql = $categoryId ? 'AND d.category_id = ?' : '';
+        if ($categoryId) {
+            $binds[] = $categoryId;
+        }
+        $binds[] = $limit;
+
+        return Database::query(
+            'SELECT dc.document_id, dc.page_number, dc.content,
+                    d.title, 1.0 AS score
+             FROM document_chunks dc
+             JOIN documents d ON d.id = dc.document_id AND d.status = \'ready\'
+             WHERE (' . implode(' OR ', $likes) . ")
+             $categorySql
+             ORDER BY dc.document_id, dc.page_number
+             LIMIT ?",
+            $binds
+        );
+    }
+
+    /** @param array<int, array<string, mixed>> $primary */
+    /** @param array<int, array<string, mixed>> $secondary */
+    private function mergeChunks(array $primary, array $secondary, int $limit): array {
+        $seen   = [];
+        $merged = [];
+
+        foreach (array_merge($primary, $secondary) as $chunk) {
+            $key = $chunk['document_id'] . ':' . $chunk['page_number'] . ':' . substr($chunk['content'], 0, 80);
+            if (isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $merged[]   = $chunk;
+            if (count($merged) >= $limit) {
+                break;
+            }
+        }
+
+        return $merged;
     }
 
     private function persistMessage(
