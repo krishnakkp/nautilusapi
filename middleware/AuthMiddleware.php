@@ -7,7 +7,13 @@ class AuthMiddleware {
      * Require a valid JWT. Returns the user array or halts.
      */
     public static function require(): array {
-        $jwt = Request::bearerToken();
+        return self::requireToken(self::bearerToken());
+    }
+
+    /**
+     * Validate a JWT string (Bearer header or ?token= for inline file viewing).
+     */
+    public static function requireToken(?string $jwt): array {
         if (!$jwt) {
             Response::error('Authentication required', 401);
             exit;
@@ -25,7 +31,6 @@ class AuthMiddleware {
             exit;
         }
 
-        // Check session token still in DB (not revoked) and user is active
         $row = Database::queryOne(
             'SELECT u.id, u.name, u.email, u.role, u.is_active
              FROM api_tokens t

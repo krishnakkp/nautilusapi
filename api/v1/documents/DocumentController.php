@@ -150,7 +150,8 @@ class DocumentController {
 
     /** Stream a document file for authenticated chat users (inline PDF/DOCX view). */
     public function serveFile(array $params): void {
-        AuthMiddleware::require();
+        $jwt = Request::bearerToken() ?? Request::get('token');
+        AuthMiddleware::requireToken(is_string($jwt) ? $jwt : null);
         $cfg = require __DIR__ . '/../../../config/config.php';
 
         $id  = (int) ($params['id'] ?? 0);
@@ -175,10 +176,18 @@ class DocumentController {
         }
 
         $filename = preg_replace('/[^\w\s.\-()]/', '_', $doc['original_filename'] ?? 'document');
-        header('Content-Type: ' . $doc['mime_type']);
-        header('Content-Disposition: inline; filename="' . $filename . '"');
+        $isPdf    = ($doc['mime_type'] ?? '') === 'application/pdf';
+
+        if ($isPdf) {
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: inline');
+        } else {
+            header('Content-Type: ' . $doc['mime_type']);
+            header('Content-Disposition: inline; filename="' . $filename . '"');
+        }
         header('Content-Length: ' . (string) filesize($path));
         header('Cache-Control: private, max-age=3600');
+        header('Accept-Ranges: bytes');
         readfile($path);
         exit;
     }
