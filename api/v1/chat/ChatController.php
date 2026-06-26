@@ -118,7 +118,11 @@ class ChatController {
             $result = $llm->answer($question, $chunks);
         } catch (Exception $e) {
             Logger::error('LLM failed: ' . $e->getMessage());
-            Response::error('AI service temporarily unavailable. Please try again.', 503);
+            $cfg = require __DIR__ . '/../../../config/config.php';
+            $msg = !empty($cfg['app']['debug'])
+                ? $e->getMessage()
+                : 'AI service temporarily unavailable. Please try again.';
+            Response::error($msg, 503);
             return;
         }
 
@@ -329,7 +333,29 @@ class ChatController {
             $chunks = $this->mergeChunks($chunks, $more, $limit);
         }
 
-        return $chunks;
+        return $this->filterUsefulChunks($chunks);
+    }
+
+    private function filterUsefulChunks(array $chunks): array {
+        return array_values(array_filter($chunks, fn($c) => $this->isUsefulChunk($c['content'] ?? '')));
+    }
+
+    private function isUsefulChunk(string $content): bool {
+        $trimmed = trim($content);
+        if (strlen($trimmed) < 20) {
+            return false;
+        }
+        $bad = [
+            'No extractable text found',
+            'No text content extracted',
+            'No text extracted',
+        ];
+        foreach ($bad as $phrase) {
+            if (str_contains($trimmed, $phrase)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private function extractSearchTerms(string $question): array {

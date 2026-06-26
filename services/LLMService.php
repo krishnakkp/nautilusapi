@@ -11,8 +11,23 @@ class LLMService {
         $cfg = require __DIR__ . '/../config/config.php';
         $this->cfg      = $cfg['llm'];
         $this->provider = $this->cfg['provider'];
-        $this->apiKey   = $this->cfg['api_key'];
+        $this->apiKey   = trim($this->cfg['api_key'] ?? '');
         $this->model    = $this->cfg['model'][$this->provider] ?? 'claude-sonnet-4-6';
+
+        if ($this->apiKey === '') {
+            throw new RuntimeException('LLM API key is not configured. Set LLM_API_KEY on the server.');
+        }
+    }
+
+    /** Quick connectivity check for /health/llm */
+    public static function ping(): array {
+        $llm = new self();
+        $raw = match ($llm->provider) {
+            'openai' => $llm->callOpenAI('Reply with exactly: OK'),
+            'gemini' => $llm->callGemini('Reply with exactly: OK'),
+            default  => $llm->callClaude('Reply with exactly: OK'),
+        };
+        return ['provider' => $llm->provider, 'model' => $llm->model, 'response' => trim($raw)];
     }
 
     /**
@@ -130,7 +145,15 @@ PROMPT;
 
         if ($error || $httpCode >= 400) {
             Logger::error("LLM API error ({$this->provider}) HTTP $httpCode: $error | Response: $response");
-            throw new RuntimeException("LLM API call failed: HTTP $httpCode");
+            $detail = '';
+            if ($response) {
+                $decoded = json_decode($response, true);
+                $detail  = $decoded['error']['message'] ?? $decoded['error']['type'] ?? '';
+            }
+            $msg = $httpCode === 401
+                ? 'LLM API key is invalid or expired'
+                : "LLM API call failed: HTTP $httpCode" . ($detail ? " ($detail)" : '');
+            throw new RuntimeException($msg);
         }
 
         $decoded = json_decode($response, true);

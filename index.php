@@ -24,6 +24,7 @@ require_once $baseDir . '/api/v1/auth/AuthController.php';
 require_once $baseDir . '/api/v1/chat/ChatController.php';
 require_once $baseDir . '/api/v1/documents/DocumentController.php';
 require_once $baseDir . '/api/v1/admin/AdminController.php';
+require_once $baseDir . '/services/LLMService.php';
 
 // ── Global middleware ─────────────────────────────────────────────
 set_exception_handler(function (Throwable $e) {
@@ -128,6 +129,23 @@ $router->get('/health/db', function() {
     } catch (Throwable $e) {
         $cfg    = require $cfgPath;
         $detail = !empty($cfg['app']['debug']) ? $e->getMessage() : 'Database connection failed';
+        Response::error($detail, 503);
+    }
+});
+
+$router->get('/health/llm', function() {
+    $cfgPath = __DIR__ . '/config/config.php';
+    if (!is_readable($cfgPath)) {
+        Response::error('config/config.php is missing on the server', 503);
+        return;
+    }
+
+    try {
+        $result = LLMService::ping();
+        Response::success(['llm' => 'connected', 'provider' => $result['provider'], 'model' => $result['model']]);
+    } catch (Throwable $e) {
+        $cfg    = require $cfgPath;
+        $detail = !empty($cfg['app']['debug']) ? $e->getMessage() : 'LLM API connection failed';
         Response::error($detail, 503);
     }
 });
