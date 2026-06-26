@@ -3,6 +3,10 @@ Options -MultiViews
 
 RewriteEngine On
 
+# Pass Authorization header to PHP (Apache strips it by default on CGI/FastCGI)
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
 # ── STEP 1: Handle OPTIONS preflight FIRST before any other rules ──
 RewriteCond %{REQUEST_METHOD} OPTIONS
 RewriteRule ^(.*)$ - [R=200,L]

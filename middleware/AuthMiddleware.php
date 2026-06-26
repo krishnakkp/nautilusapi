@@ -7,25 +7,31 @@ class AuthMiddleware {
      * Require a valid JWT. Returns the user array or halts.
      */
     public static function require(): array {
-        $token = Request::bearerToken();
-        if (!$token) {
+        $jwt = Request::bearerToken();
+        if (!$jwt) {
             Response::error('Authentication required', 401);
             exit;
         }
 
-        $payload = JWT::verify($token);
+        $payload = JWT::verify($jwt);
         if (!$payload) {
             Response::error('Invalid or expired token', 401);
             exit;
         }
 
-        // Check token still in DB (not revoked) and user is active
+        $sessionToken = $payload['token'] ?? '';
+        if ($sessionToken === '') {
+            Response::error('Invalid or expired token', 401);
+            exit;
+        }
+
+        // Check session token still in DB (not revoked) and user is active
         $row = Database::queryOne(
             'SELECT u.id, u.name, u.email, u.role, u.is_active
              FROM api_tokens t
              JOIN users u ON u.id = t.user_id
              WHERE t.token = ? AND t.expires_at > NOW()',
-            [$token]
+            [$sessionToken]
         );
 
         if (!$row || !$row['is_active']) {
@@ -33,8 +39,7 @@ class AuthMiddleware {
             exit;
         }
 
-        // Touch last_used_at
-        Database::execute('UPDATE api_tokens SET last_used_at = NOW() WHERE token = ?', [$token]);
+        Database::execute('UPDATE api_tokens SET last_used_at = NOW() WHERE token = ?', [$sessionToken]);
 
         return $row;
     }
