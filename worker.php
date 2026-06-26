@@ -1,0 +1,97 @@
+#!/usr/bin/env php
+<?php
+// backend/worker.php — Run as: php worker.php
+// This processes queued document parsing jobs.
+// Set up as a cron or supervisor daemon.
+
+$baseDir = __DIR__;
+require_once $baseDir . '/core/Database.php';
+require_once $baseDir . '/core/Logger.php';
+require_once $baseDir . '/core/Response.php'; // needed by Database
+require_once $baseDir . '/core/Request.php';
+require_once $baseDir . '/services/DocumentParser.php';
+
+function processJobs(): void {
+    $cfg = require __DIR__ . '/config/config.php';
+
+    while (true) {
+        // Pick next queued job
+        $job = Database::queryOne(
+            "SELECT dj.id AS job_id, dj.document_id, d.storage_path, d.mime_type
+             FROM document_jobs dj
+             JOIN documents d ON d.id = dj.document_id
+             WHERE dj.status = 'queued' AND dj.attempts < 3
+             ORDER BY dj.created_at ASC
+             LIMIT 1"
+        );
+
+        if (!$job) {
+            sleep(5); // Poll every 5 seconds
+            continue;
+        }
+
+        Logger::info("Worker: processing document ID {$job['document_id']}");
+
+        try {
+            Database::execute(
+                "UPDATE document_jobs SET status = 'processing', attempts = attempts + 1 WHERE id = ?",
+                [$job['job_id']]
+            );
+            Database::execute(
+                "UPDATE documents SET status = 'processing' WHERE id = ?",
+                [$job['document_id']]
+            );
+
+            $parser = new DocumentParser();
+            $pages  = $job['mime_type'] === 'application/pdf'
+                ? $parser->parsePdf($job['storage_path'])
+                : $parser->parseDocx($job['storage_path']);
+
+            $chunkSize    = $cfg['llm']['chunk_size'];
+            $chunkOverlap = $cfg['llm']['chunk_overlap'];
+
+            // Clear old chunks
+            Database::execute('DELETE FROM document_chunks WHERE document_id = ?', [$job['document_id']]);
+
+            foreach ($pages as $pageNum => $text) {
+                $chunks = $parser->chunkText($text, $chunkSize, $chunkOverlap);
+                foreach ($chunks as $idx => $chunk) {
+                    Database::insert(
+                        'INSERT INTO document_chunks (document_id, page_number, chunk_index, content) VALUES (?,?,?,?)',
+                        [$job['document_id'], $pageNum, $idx, $chunk]
+                    );
+                }
+            }
+
+            $keywords = $parser->extractKeywords($pages);
+
+            Database::execute(
+                "UPDATE documents SET status='ready', page_count=?, keywords=? WHERE id=?",
+                [count($pages), $keywords, $job['document_id']]
+            );
+            Database::execute(
+                "UPDATE document_jobs SET status='done' WHERE id=?",
+                [$job['job_id']]
+            );
+
+            Logger::info("Worker: completed document ID {$job['document_id']} ({$job['page_count']} pages)");
+
+        } catch (Exception $e) {
+            Logger::error("Worker: failed document ID {$job['document_id']}: " . $e->getMessage());
+            Database::execute(
+                "UPDATE document_jobs SET status='failed', error_message=? WHERE id=?",
+                [$e->getMessage(), $job['job_id']]
+            );
+            Database::execute(
+                "UPDATE documents SET status='error', error_message=? WHERE id=?",
+                [$e->getMessage(), $job['document_id']]
+            );
+        }
+
+        sleep(1); // Brief pause between jobs
+    }
+}
+
+echo "Nautilus KB Worker started\n";
+Logger::info("Worker process started (PID: " . getmypid() . ")");
+processJobs();
