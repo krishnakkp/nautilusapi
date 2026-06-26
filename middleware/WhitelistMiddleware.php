@@ -28,14 +28,20 @@ class WhitelistMiddleware {
         }
 
         // Block requests from unlisted origins (skip check for same-origin / no origin)
-        if ($origin && !self::isAllowed($origin)) {
-            Response::error('Origin not whitelisted', 403);
-            exit;
+        if ($origin) {
+            try {
+                if (!self::isAllowed($origin)) {
+                    Response::error('Origin not whitelisted', 403);
+                    exit;
+                }
+            } catch (Throwable $e) {
+                Response::error('Database connection failed', 503);
+                exit;
+            }
         }
     }
 
     private static function isAllowed(string $origin): bool {
-        // Always allow during local dev if no whitelist exists yet
         $row = Database::queryOne(
             'SELECT id FROM whitelisted_urls WHERE origin = ? AND is_active = 1 LIMIT 1',
             [$origin]

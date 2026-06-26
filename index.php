@@ -27,8 +27,26 @@ require_once $baseDir . '/api/v1/admin/AdminController.php';
 
 // ── Global middleware ─────────────────────────────────────────────
 set_exception_handler(function (Throwable $e) {
-    Logger::error('Unhandled exception: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+    if (class_exists('Logger', false)) {
+        try {
+            Logger::error('Unhandled exception: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+        } catch (Throwable) {
+            // Logger may fail if config/logs are unavailable — still return JSON below.
+        }
+    }
     Response::error('Internal server error', 500);
+});
+
+register_shutdown_function(function () {
+    $error = error_get_last();
+    if (!$error || !in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        return;
+    }
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+    }
+    echo json_encode(['success' => false, 'message' => 'Internal server error']);
 });
 
 // Apply whitelist + CORS first
@@ -95,6 +113,23 @@ $router->get   ('/admin/metrics',             [AdminController::class, 'metrics'
 // ── Health check ──────────────────────────────────────────────────
 $router->get('/health', function() {
     Response::success(['status' => 'ok', 'timestamp' => time()]);
+});
+
+$router->get('/health/db', function() {
+    $cfgPath = __DIR__ . '/config/config.php';
+    if (!is_readable($cfgPath)) {
+        Response::error('config/config.php is missing on the server', 503);
+        return;
+    }
+
+    try {
+        Database::getInstance()->query('SELECT 1 AS ok');
+        Response::success(['database' => 'connected']);
+    } catch (Throwable $e) {
+        $cfg    = require $cfgPath;
+        $detail = !empty($cfg['app']['debug']) ? $e->getMessage() : 'Database connection failed';
+        Response::error($detail, 503);
+    }
 });
 
 // ── Dispatch ──────────────────────────────────────────────────────
