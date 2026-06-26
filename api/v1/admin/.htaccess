@@ -1,8 +1,0 @@
-Options -Indexes
-
-# Prevent Apache from serving this controller folder directly.
-# All /admin/* API routes must go through the root index.php router.
-<IfModule mod_rewrite.c>
-RewriteEngine On
-RewriteRule ^ index.php [QSA,L]
-</IfModule>

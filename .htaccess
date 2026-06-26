@@ -13,6 +13,8 @@ RewriteRule ^(config|core|middleware|services|models|logs|cache|uploads)/ - [F,L
 # ── STEP 3: Route API requests through index.php ──
 # Do NOT skip when a matching directory exists on disk — otherwise paths like
 # /admin/categories hit real folders, get a trailing-slash 301, then 403.
+# IMPORTANT: Do NOT add .htaccess files inside api/v1/auth|admin|chat|documents/
+# — they rewrite to a local index.php that does not exist and break all routes.
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteRule ^ index.php [QSA,L]
 
