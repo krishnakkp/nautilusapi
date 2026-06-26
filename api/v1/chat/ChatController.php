@@ -203,7 +203,8 @@ class ChatController {
                             "document_id", s.document_id,
                             "document_title", d.title,
                             "page_number", s.page_number,
-                            "relevance_rank", s.relevance_rank
+                            "relevance_rank", s.relevance_rank,
+                            "mime_type", d.mime_type
                         )
                     ) FROM message_sources s JOIN documents d ON d.id = s.document_id WHERE s.message_id = m.id) AS sources
              FROM chat_messages m
@@ -402,7 +403,7 @@ class ChatController {
         try {
             return Database::query(
                 "SELECT dc.document_id, dc.page_number, dc.content,
-                        d.title,
+                        d.title, d.mime_type,
                         MATCH(dc.content) AGAINST (? IN $modeSql) AS score
                  FROM document_chunks dc
                  JOIN documents d ON d.id = dc.document_id AND d.status = 'ready'
@@ -442,7 +443,7 @@ class ChatController {
 
         return Database::query(
             'SELECT dc.document_id, dc.page_number, dc.content,
-                    d.title, 1.0 AS score
+                    d.title, d.mime_type, 1.0 AS score
              FROM document_chunks dc
              JOIN documents d ON d.id = dc.document_id AND d.status = \'ready\'
              WHERE (' . implode(' OR ', $likes) . ")

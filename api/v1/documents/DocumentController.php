@@ -136,6 +136,45 @@ class DocumentController {
         Response::paginated($rows, (int) $total, $page, $perPage);
     }
 
+    /** Stream a document file for authenticated chat users (inline PDF/DOCX view). */
+    public function serveFile(array $params): void {
+        AuthMiddleware::require();
+        $cfg = require __DIR__ . '/../../../config/config.php';
+
+        $id  = (int) ($params['id'] ?? 0);
+        $doc = Database::queryOne(
+            "SELECT storage_path, mime_type, original_filename, status FROM documents WHERE id = ? AND status = 'ready'",
+            [$id]
+        );
+
+        if (!$doc) {
+            Response::error('Document not found', 404);
+            return;
+        }
+
+        $path      = realpath($doc['storage_path']);
+        $uploadDir = realpath(rtrim($cfg['app']['upload_dir'], '/'));
+
+        if (
+            !$path
+            || !$uploadDir
+            || !is_readable($path)
+            || !str_starts_with($path, $uploadDir . DIRECTORY_SEPARATOR)
+        ) {
+            Logger::warn("Document file missing or unreadable: id=$id path={$doc['storage_path']}");
+            Response::error('Document file not available', 404);
+            return;
+        }
+
+        $filename = preg_replace('/[^\w\s.\-()]/', '_', $doc['original_filename'] ?? 'document');
+        header('Content-Type: ' . $doc['mime_type']);
+        header('Content-Disposition: inline; filename="' . $filename . '"');
+        header('Content-Length: ' . (string) filesize($path));
+        header('Cache-Control: private, max-age=3600');
+        readfile($path);
+        exit;
+    }
+
     public function show(array $params): void {
         AuthMiddleware::requireAdmin();
         $id  = (int) ($params['id'] ?? 0);

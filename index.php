@@ -82,6 +82,7 @@ $router->delete('/chat/sessions/:id',         [ChatController::class, 'deleteSes
 $router->get   ('/chat/faqs',                 [ChatController::class, 'faqs']);
 $router->get   ('/chat/categories',           [ChatController::class, 'categories']);
 $router->post  ('/chat/submit-query',         [ChatController::class, 'submitQuery']);
+$router->get   ('/chat/documents/:id/file',   [DocumentController::class, 'serveFile']);
 
 // ── DOCUMENTS (Admin) ─────────────────────────────────────────────
 $router->get   ('/admin/documents',           [DocumentController::class, 'index']);
@@ -148,6 +149,10 @@ $router->get('/health/llm', function() {
         $detail = !empty($cfg['app']['debug']) ? $e->getMessage() : 'LLM API connection failed';
         Response::error($detail, 503);
     }
+});
+
+$router->get('/health/document-file', function() {
+    Response::success(['document_file_route' => true]);
 });
 
 // ── Dispatch ──────────────────────────────────────────────────────

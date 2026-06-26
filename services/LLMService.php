@@ -188,6 +188,7 @@ PROMPT;
                     'document_title' => $chunks[$i]['title'],
                     'page_number'    => $chunks[$i]['page_number'],
                     'relevance_rank' => $i + 1,
+                    'mime_type'      => $chunks[$i]['mime_type'] ?? 'application/pdf',
                 ];
             }
         }
