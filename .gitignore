@@ -4,6 +4,9 @@
 /node_modules
 /.pnp
 .pnp.js
+# Uploaded PDFs/DOCX — keep folder in git, not the files
+/uploads/*
+!/uploads/.gitkeep
 
 # testing
 /coverage

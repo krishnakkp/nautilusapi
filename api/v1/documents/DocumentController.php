@@ -136,6 +136,15 @@ class DocumentController {
             array_merge($binds, [$perPage, $offset])
         );
 
+        $cfg = require __DIR__ . '/../../../config/config.php';
+        foreach ($rows as &$row) {
+            $row['file_on_disk'] = $this->resolveDocumentPath(
+                $row['storage_path'],
+                $cfg['app']['upload_dir']
+            ) !== null;
+        }
+        unset($row);
+
         Response::paginated($rows, (int) $total, $page, $perPage);
     }
 
@@ -158,7 +167,10 @@ class DocumentController {
         $path = $this->resolveDocumentPath($doc['storage_path'], $cfg['app']['upload_dir']);
         if (!$path) {
             Logger::warn("Document file missing or unreadable: id=$id path={$doc['storage_path']}");
-            Response::error('Document file not available', 404);
+            Response::error(
+                'PDF file missing on server. Re-upload the document in Admin → Documents.',
+                404
+            );
             return;
         }
 
