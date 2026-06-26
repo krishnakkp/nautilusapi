@@ -7,7 +7,7 @@ class AuthMiddleware {
      * Require a valid JWT. Returns the user array or halts.
      */
     public static function require(): array {
-        return self::requireToken(self::bearerToken());
+        return self::requireToken(Request::bearerToken());
     }
 
     /**
