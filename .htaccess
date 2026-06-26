@@ -11,8 +11,11 @@ RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 RewriteCond %{REQUEST_METHOD} OPTIONS
 RewriteRule ^(.*)$ - [R=200,L]
 
-# ── STEP 2: Block sensitive directories ──
+# ── STEP 2: Block sensitive directories and files ──
 RewriteRule ^(config|core|middleware|services|models|logs|cache|uploads)/ - [F,L]
+<Files ".env">
+    Require all denied
+</Files>
 
 # ── STEP 3: Route API requests through index.php ──
 # Do NOT skip when a matching directory exists on disk — otherwise paths like
